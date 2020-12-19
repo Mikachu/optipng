@@ -623,7 +623,7 @@ opng_os_copy_file_attr(const char *src_path, const char *dest_path)
     if (chmod(dest_path, sbuf.st_mode) != 0)
         result = -1;
 
-#if defined AT_FDCWD && defined UTIME_NOW && defined UTIME_OMIT
+#if (defined(AT_FDCWD) && !(defined(__SVR4) && defined(__sun))) && defined UTIME_NOW && defined UTIME_OMIT
     {
         struct timespec times[2];
 
