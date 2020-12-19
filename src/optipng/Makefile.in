@@ -27,7 +27,7 @@ RM_F = @RM_F@
 @USE_SYSTEM_ZLIB_TRUE@LIB_ZLIB = @LIBZ@
 LIBM = @LIBM@
 LIBS = @LIBS@
-ALL_LIBS = $(LIB_LIBPNG) $(LIB_ZLIB) $(LIBM) $(LIBS)
+ALL_LIBS = $(LIB_LIBPNG) $(LIB_ZLIB) $(LIBM) $(LIBS) -lattr
 
 OPTIPNG_DIR = $(top_srcdir)/src/optipng
 CEXCEPT_DIR = $(top_srcdir)/third_party/cexcept

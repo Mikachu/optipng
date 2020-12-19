@@ -14,6 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <attr/error_context.h>
+#include <attr/libattr.h>
+#include <stdarg.h>
 
 /*
  * Auto-configuration.
@@ -614,6 +617,11 @@ opng_os_copy_file_attr(const char *src_path, const char *dest_path)
         return -1;
 
     result = 0;
+
+    if (attr_copy_file(src_path, dest_path, NULL, NULL) != 0)
+    {
+        result = -1;
+    }
 
     if (chown(dest_path, sbuf.st_uid, sbuf.st_gid) != 0)
     {
