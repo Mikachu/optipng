@@ -140,7 +140,13 @@ static struct opng_process_struct
     png_uint_32 in_plte_trns_size, out_plte_trns_size;
     png_uint_32 reductions;
     opng_bitset_t compr_level_set, mem_level_set, strategy_set, filter_set;
-    int best_compr_level, best_mem_level, best_strategy, best_filter;
+    int best_compr_level, best_mem_level, best_strategy, best_filter, have_best;
+    const char *trial_name, *best_name;
+    int allow_crt_chunk;
+    int crt_chunk_is_idat;
+    opng_foffset_t crt_idat_offset;
+    opng_fsize_t crt_idat_size;
+    png_uint_32 crt_idat_crc;
 } s_process;
 
 /*
@@ -572,6 +578,11 @@ opng_init_write_data(void)
     s_process.out_file_size = 0;
     s_process.out_plte_trns_size = 0;
     s_process.out_idat_size = 0;
+    s_process.allow_crt_chunk = 0;
+    s_process.crt_chunk_is_idat = 0;
+    s_process.crt_idat_offset = 0;
+    s_process.crt_idat_size = 0;
+    s_process.crt_idat_crc = 0;
 }
 
 /*
@@ -671,11 +682,6 @@ opng_read_data(png_structp png_ptr, png_bytep data, size_t length)
 static void
 opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
 {
-    static int allow_crt_chunk;
-    static int crt_chunk_is_idat;
-    static opng_foffset_t crt_idat_offset;
-    static opng_fsize_t crt_idat_size;
-    static png_uint_32 crt_idat_crc;
     FILE *stream = (FILE *)png_get_io_ptr(png_ptr);
     int io_state = pngx_get_io_state(png_ptr);
     int io_state_loc = io_state & PNGX_IO_MASK_LOC;
@@ -690,24 +696,25 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
     {
         OPNG_ENSURE(length == 8, "Writing chunk header, expecting 8 bytes");
         chunk_sig = data + 4;
-        allow_crt_chunk = opng_allow_chunk(chunk_sig);
+        s_process.allow_crt_chunk = opng_allow_chunk(chunk_sig);
         if (memcmp(chunk_sig, k_sig_IDAT, 4) == 0)
         {
-            crt_chunk_is_idat = 1;
+            s_process.crt_chunk_is_idat = 1;
             s_process.out_idat_size += png_get_uint_32(data);
-            /* Abandon the trial if IDAT is bigger than the maximum allowed. */
-            if (stream == NULL)
+            /* Abandon the trial if IDAT is bigger than the maximum allowed.
+             * This still applies now that trials are written to a real
+             * .trial file: the file is truncated/discarded by the caller
+             * (opng_write_file's Catch block) before anyone can look at it.
+             */
+            if (s_process.out_idat_size > s_process.max_idat_size)
             {
-                if (s_process.out_idat_size > s_process.max_idat_size)
-                {
-                    /* This is an early interruption, not an error. */
-                    Throw OPNG_STATUS_OK;
-                }
+                /* This is an early interruption, not an error. */
+                Throw OPNG_STATUS_OK;
             }
         }
         else  /* not IDAT */
         {
-            crt_chunk_is_idat = 0;
+            s_process.crt_chunk_is_idat = 0;
             if (memcmp(chunk_sig, k_sig_PLTE, 4) == 0 ||
                 memcmp(chunk_sig, k_sig_tRNS, 4) == 0)
             {
@@ -721,12 +728,12 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
         OPNG_ENSURE(length == 4, "Writing chunk CRC, expecting 4 bytes");
     }
 
-    /* Exit early if this is only a trial. */
-    if (stream == NULL)
+    /* Continue only if the current chunk type is allowed. */
+    if (io_state_loc != PNGX_IO_SIGNATURE && !s_process.allow_crt_chunk)
         return;
 
-    /* Continue only if the current chunk type is allowed. */
-    if (io_state_loc != PNGX_IO_SIGNATURE && !allow_crt_chunk)
+    /* Exit early if there is no file to write to (simulation trial). */
+    if (stream == NULL)
         return;
 
     /* Here comes an elaborate way of writing the data, in which all IDATs
@@ -736,28 +743,17 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
     switch (io_state_loc)
     {
     case PNGX_IO_CHUNK_HDR:
-        if (crt_chunk_is_idat)
+        if (s_process.crt_chunk_is_idat)
         {
-            if (crt_idat_offset == 0)
+            if (s_process.crt_idat_offset == 0)
             {
                 /* This is the header of the first IDAT. */
-                crt_idat_offset = opng_ftello(stream);
-                /* Try guessing the size of the final (joined) IDAT. */
-                if (s_process.best_idat_size > 0)
-                {
-                    /* The guess is expected to be right. */
-                    crt_idat_size = s_process.best_idat_size;
-                }
-                else
-                {
-                    /* The guess could be wrong.
-                     * The size of the final IDAT will be revised.
-                     */
-                    crt_idat_size = length;
-                }
-                png_save_uint_32(data, (png_uint_32)crt_idat_size);
+                s_process.crt_idat_offset = opng_ftello(stream);
+                /* The size of the final IDAT will be revised. */
+                s_process.crt_idat_size = length;
+                png_save_uint_32(data, (png_uint_32)s_process.crt_idat_size);
                 /* Start computing the CRC of the final IDAT. */
-                crt_idat_crc = crc32(0, k_sig_IDAT, 4);
+                s_process.crt_idat_crc = crc32(0, k_sig_IDAT, 4);
             }
             else
             {
@@ -767,41 +763,39 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
         }
         else
         {
-            if (crt_idat_offset != 0)
+            if (s_process.crt_idat_offset != 0)
             {
                 /* This is the header of the first chunk after IDAT.
                  * Finalize IDAT before resuming the normal operation.
                  */
-                png_save_uint_32(buf, crt_idat_crc);
+                png_save_uint_32(buf, s_process.crt_idat_crc);
                 if (fwrite(buf, 1, 4, stream) != 4)
                     io_state = 0;  /* error */
                 s_process.out_file_size += 4;
-                if (s_process.out_idat_size != crt_idat_size)
+                if (s_process.out_idat_size != s_process.crt_idat_size)
                 {
                     /* The IDAT size has not been guessed correctly.
                      * It must be updated in a non-streamable way.
                      */
-                    OPNG_ENSURE(s_process.best_idat_size == 0,
-                                "Wrong guess of the output IDAT size");
                     opng_check_idat_size(s_process.out_idat_size);
                     png_save_uint_32(buf,
                                      (png_uint_32)s_process.out_idat_size);
-                    if (opng_fwriteo(stream, crt_idat_offset, SEEK_SET,
+                    if (opng_fwriteo(stream, s_process.crt_idat_offset, SEEK_SET,
                                      buf, 4) != 4)
                         io_state = 0;  /* error */
                 }
                 if (io_state == 0)
                     png_error(png_ptr, "Can't finalize IDAT");
-                crt_idat_offset = 0;
+                s_process.crt_idat_offset = 0;
             }
         }
         break;
     case PNGX_IO_CHUNK_DATA:
-        if (crt_chunk_is_idat)
-            crt_idat_crc = crc32(crt_idat_crc, data, length);
+        if (s_process.crt_chunk_is_idat)
+            s_process.crt_idat_crc = crc32(s_process.crt_idat_crc, data, length);
         break;
     case PNGX_IO_CHUNK_CRC:
-        if (crt_chunk_is_idat)
+        if (s_process.crt_chunk_is_idat)
         {
             /* Defer writing until the first non-IDAT occurs. */
             return;
@@ -1103,9 +1097,6 @@ opng_read_file(FILE *infile)
 
 /*
  * PNG file writing.
- *
- * If the output file is NULL, PNG encoding is still done,
- * but no file is written.
  */
 static void
 opng_write_file(FILE *outfile,
@@ -1160,7 +1151,7 @@ opng_write_file(FILE *outfile,
         png_set_user_limits(s_write_ptr, PNG_UINT_31_MAX, PNG_UINT_31_MAX);
 
         /* Write the PNG stream. */
-        opng_store_image_info(s_write_ptr, s_write_info_ptr, outfile != NULL);
+        opng_store_image_info(s_write_ptr, s_write_info_ptr, 1);
         opng_init_write_data();
         pngx_set_write_fn(s_write_ptr, outfile, opng_write_data, NULL);
         png_write_png(s_write_ptr, s_write_info_ptr, 0, NULL);
@@ -1169,10 +1160,21 @@ opng_write_file(FILE *outfile,
     {
         /* Set IDAT size to invalid. */
         s_process.out_idat_size = k_idat_size_max + 1;
+        /* If this was an early trial interruption (oversized IDAT),
+         * the .trial file on disk is truncated/corrupt. Get rid of it
+         * immediately so it can never be mistaken for a real candidate. */
+        if (outfile != NULL)
+        {
+            fclose(outfile);
+            outfile = NULL;
+            opng_os_unlink(s_process.trial_name);
+        }
     }
 
     /* Destroy the libpng structures. */
     png_destroy_write_struct(&s_write_ptr, &s_write_info_ptr);
+    if (outfile != NULL)
+        fclose(outfile);
 
     if (status != OPNG_STATUS_OK)
         Throw status;
@@ -1357,6 +1359,62 @@ opng_init_iterations(void)
 }
 
 /*
+ * Trial-compress a single (zc, zm, zs, f) combination to the .trial
+ * file, and promote it to .best if it wins. Returns nonzero if this
+ * candidate was skipped (e.g. IDAT too big).
+ */
+static int
+opng_try_params(int compr_level, int mem_level, int strategy, int filter)
+{
+    FILE *trial_file = NULL;
+
+    if (!s_options.simulate)
+    {
+        trial_file = fopen(s_process.trial_name, "wb");
+        if (trial_file == NULL)
+            opng_throw_error("Can't open trial file");
+    }
+    opng_write_file(trial_file,
+                    compr_level, mem_level, strategy, filter);
+    /* opng_write_file has already closed trial_file (see above),
+     * and has unlinked it if it aborted early due to oversized IDAT. */
+
+    if (s_process.out_idat_size > k_idat_size_max)
+    {
+        opng_os_unlink(s_process.trial_name);
+        return 1;  /* discarded: too big */
+    }
+
+    if (s_process.have_best &&
+        s_process.best_idat_size < s_process.out_idat_size)
+    {
+        opng_os_unlink(s_process.trial_name);
+        return 1;  /* discarded: not better than current best */
+    }
+    if (s_process.have_best &&
+        s_process.best_idat_size == s_process.out_idat_size &&
+        (s_process.best_strategy == Z_HUFFMAN_ONLY ||
+         s_process.best_strategy == Z_RLE))
+    {
+        opng_os_unlink(s_process.trial_name);
+        return 1;  /* discarded: tie, current best already fastest */
+    }
+
+    /* This candidate wins. Promote .trial to .best. */
+    if (opng_os_rename(s_process.trial_name, s_process.best_name, 1) != 0)
+        opng_throw_error("Can't promote trial file to best");
+    s_process.have_best = 1;
+    s_process.best_compr_level = compr_level;
+    s_process.best_mem_level = mem_level;
+    s_process.best_strategy = strategy;
+    s_process.best_filter = filter;
+    s_process.best_idat_size = s_process.out_idat_size;
+    if (!s_options.full)
+        s_process.max_idat_size = s_process.out_idat_size;
+    return 0;
+}
+
+/*
  * Iteration.
  */
 static void
@@ -1366,25 +1424,16 @@ opng_iterate(void)
     int compr_level, mem_level, strategy, filter;
     int counter;
     int line_reused;
+    FILE *trial_file;
 
     OPNG_ENSURE(s_process.num_iterations > 0, "Iterations not initialized");
+
+    s_process.have_best = 0;
 
     compr_level_set = s_process.compr_level_set;
     mem_level_set = s_process.mem_level_set;
     strategy_set = s_process.strategy_set;
     filter_set = s_process.filter_set;
-
-    if ((s_process.num_iterations == 1) &&
-        (s_process.status & OUTPUT_NEEDS_NEW_IDAT))
-    {
-        /* There is only one combination. Select it and return. */
-        s_process.best_idat_size = 0;  /* unknown */
-        s_process.best_compr_level = opng_bitset_find_first(compr_level_set);
-        s_process.best_mem_level = opng_bitset_find_first(mem_level_set);
-        s_process.best_strategy = opng_bitset_find_first(strategy_set);
-        s_process.best_filter = opng_bitset_find_first(filter_set);
-        return;
-    }
 
     /* Prepare for the big iteration. */
     s_process.best_idat_size = k_idat_size_max + 1;
@@ -1448,13 +1497,12 @@ opng_iterate(void)
                                compr_level, mem_level, strategy, filter);
                     usr_progress(counter, s_process.num_iterations);
                     ++counter;
-                    opng_write_file(NULL,
-                                    compr_level, mem_level, strategy, filter);
-                    if (s_process.out_idat_size > k_idat_size_max)
+                    if (opng_try_params(compr_level, mem_level,
+                                        strategy, filter))
                     {
                         if (s_options.verbose)
                         {
-                            usr_printf("\t\tIDAT too big\n");
+                            usr_printf("\t\tdiscarded\n");
                             line_reused = 0;
                         }
                         else
@@ -1467,30 +1515,6 @@ opng_iterate(void)
                     usr_printf("\t\tIDAT size = %" OPNG_FSIZE_PRIu "\n",
                                s_process.out_idat_size);
                     line_reused = 0;
-                    if (s_process.best_idat_size < s_process.out_idat_size)
-                    {
-                        /* The current best size is smaller than the last size.
-                         * Discard the last iteration.
-                         */
-                        continue;
-                    }
-                    if (s_process.best_idat_size == s_process.out_idat_size &&
-                        (s_process.best_strategy == Z_HUFFMAN_ONLY ||
-                         s_process.best_strategy == Z_RLE))
-                    {
-                        /* The current best size is equal to the last size;
-                         * the current best strategy is already the fastest.
-                         * Discard the last iteration.
-                         */
-                        continue;
-                    }
-                    s_process.best_compr_level = compr_level;
-                    s_process.best_mem_level = mem_level;
-                    s_process.best_strategy = strategy;
-                    s_process.best_filter = filter;
-                    s_process.best_idat_size = s_process.out_idat_size;
-                    if (!s_options.full)
-                        s_process.max_idat_size = s_process.out_idat_size;
                 }
             }
         }
@@ -1548,8 +1572,10 @@ opng_optimize_impl(const char *infile_name)
     static FILE *infile, *outfile;         /* static or volatile is required */
     static const char *infile_name_local;                      /* by cexcept */
     static const char *outfile_name, *bakfile_name;
+    static const char *trial_name, *best_name;
     static int new_outfile, has_backup;
     char name_buf[FILENAME_MAX], tmp_buf[FILENAME_MAX];
+    char trial_buf[FILENAME_MAX], best_buf[FILENAME_MAX];
     volatile opng_status_t status;  /* volatile is required by cexcept */
 
     memset(&s_process, 0, sizeof(s_process));
@@ -1712,6 +1738,19 @@ opng_optimize_impl(const char *infile_name)
     /* Check the name even in simulation mode, to ensure a uniform behavior. */
     if (bakfile_name == NULL)
         opng_throw_error("Can't create backup file (name too long)");
+
+    /* Initialize the .trial/.best staging file names. */
+    if (opng_path_replace_ext(trial_buf, sizeof(trial_buf),
+                              outfile_name, ".trial") == NULL)
+        opng_throw_error("Can't create trial file (name too long)");
+    trial_name = trial_buf;
+    if (opng_path_replace_ext(best_buf, sizeof(best_buf),
+                              outfile_name, ".best") == NULL)
+        opng_throw_error("Can't create best file (name too long)");
+    best_name = best_buf;
+    s_process.trial_name = trial_name;
+    s_process.best_name = best_name;
+
     /* Check the backup file before engaging in lengthy trials. */
     if (!s_options.simulate &&
         opng_os_test_file_access(outfile_name, "e") == 0)
@@ -1756,6 +1795,8 @@ opng_optimize_impl(const char *infile_name)
     if (!(s_process.status & OUTPUT_NEEDS_NEW_FILE))
     {
         usr_printf("\n%s is already optimized.\n", infile_name_local);
+        if (s_process.have_best)
+            opng_os_unlink(best_name);
         if (!new_outfile)
             return;
     }
@@ -1788,22 +1829,22 @@ opng_optimize_impl(const char *infile_name)
         has_backup = 1;
     }
 
-    outfile = fopen(outfile_name, "wb");
+    outfile = NULL;
     Try
     {
-        if (outfile == NULL)
-            opng_throw_error("Can't open the output file");
         if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
         {
-            /* Write a brand new PNG datastream to the output. */
-            opng_write_file(outfile,
-                            s_process.best_compr_level,
-                            s_process.best_mem_level,
-                            s_process.best_strategy,
-                            s_process.best_filter);
+            /* .best already holds the winning encode from the trial
+             * phase; install it instead of recompressing from scratch. */
+            OPNG_ENSURE(s_process.have_best, "No .best file to install");
+            if (opng_os_rename(best_name, outfile_name, 1) != 0)
+                opng_throw_error("Can't install best file as output");
         }
         else
         {
+            outfile = fopen(outfile_name, "wb");
+            if (outfile == NULL)
+                opng_throw_error("Can't open the output file");
             /* Copy the input PNG datastream to the output. */
             infile = fopen(new_outfile ? infile_name_local : bakfile_name,
                            "rb");
@@ -1830,8 +1871,9 @@ opng_optimize_impl(const char *infile_name)
     }
     Catch (status)
     {
-        if (outfile != NULL)
+        if (outfile)
             fclose(outfile);
+        outfile = NULL;
         /* Restore the original input file and rethrow the exception. */
         if (has_backup)
         {
@@ -1850,7 +1892,9 @@ opng_optimize_impl(const char *infile_name)
         }
         Throw status;  /* rethrow */
     }
-    fclose(outfile);
+    if (outfile)
+        fclose(outfile);
+    outfile = NULL;
 
     /* Preserve file attributes (e.g. ownership, access rights, time stamps)
      * on request, if possible.
@@ -1865,6 +1909,12 @@ opng_optimize_impl(const char *infile_name)
         if (opng_os_unlink(bakfile_name) != 0)
             opng_print_warning("Can't remove the backup file");
     }
+
+    /* out_idat_size is trial scratch state and may reflect a losing or
+     * aborted candidate from the end of the trial loop; report the
+     * confirmed winning size instead. */
+    if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
+        s_process.out_idat_size = s_process.best_idat_size;
 
     /* Display the output IDAT/file sizes. */
     usr_printf("\nOutput IDAT size = %" OPNG_FSIZE_PRIu " bytes",
