@@ -1,4 +1,4 @@
-# OptiPNG version 7.9.1
+# OptiPNG version 8.0.0
 # Copyright (C) 2001-2025 Cosmin Truta and the Contributing Authors.
 # See the accompanying LICENSE file for details.
 #
@@ -15,6 +15,7 @@ Fabien Barbier
 Friedrich Preuss
 Maciej Pilichowski
 Matthew Fearnley
+Mikael Magnusson
 Nelson A. de Oliveira
 Niels de Koning
 Oliver Schneider

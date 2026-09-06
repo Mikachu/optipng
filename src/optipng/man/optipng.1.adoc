@@ -1,7 +1,7 @@
 = OPTIPNG(1) =
 :doctype: manpage
 :mansource: optipng
-:manversion: 7.9.1
+:manversion: 8.0.0
 :manmanual: OptiPNG Manual
 
 == NAME ==

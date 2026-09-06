@@ -13,6 +13,18 @@ Legend
  * Improved architecture, upgraded dependency, refactored code, etc.
 ** Reported factoid.
 
+Version 8.0.0   2026-sep-06 (unofficial release)
+-------------
+++ Write trial png to a new file and leave original file in place until the
+   best new trial version has been found, then replace it atomically. This avoids
+   compressing the file n+1 times, and especially avoids compressing the file
+   twice with -o1.
+++ Applied a contributed patch that improves speed for zs2 and zs3
+   (used at -o2 and up) by around 20%.
+   [Found by Aymeric Blot]
+ ! Fix misleading error message when output file was not writable.
+ + Add copying xattrs with -preserve.
+
 Version 7.9.1   2025-may-20
 -------------
  * Upgraded libpng to version 1.6.48.

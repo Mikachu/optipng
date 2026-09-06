@@ -1,4 +1,4 @@
-# OptiPNG version 7.9.1: Advanced PNG optimizer
+# OptiPNG version 8.0.0: Advanced PNG optimizer
 
 ## Copyright and licensing
 

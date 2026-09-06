@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.15...4.0)
 
 project(OptiPNG
-        VERSION 7.9.1
+        VERSION 8.0.0
         DESCRIPTION "Advanced PNG optimizer"
         LANGUAGES C
 )
