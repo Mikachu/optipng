@@ -1139,20 +1139,12 @@ opng_write_file(FILE *outfile,
         png_set_compression_strategy(s_write_ptr, compression_strategy);
         png_set_filter(s_write_ptr, PNG_FILTER_TYPE_BASE,
                        k_filter_table[filter]);
-        if (compression_strategy != Z_HUFFMAN_ONLY &&
+        if (s_options.window_bits > 0 &&
+            compression_strategy != Z_HUFFMAN_ONLY &&
             compression_strategy != Z_RLE)
         {
-            if (s_options.window_bits > 0)
-                png_set_compression_window_bits(s_write_ptr,
-                                                s_options.window_bits);
-        }
-        else
-        {
-#ifdef WBITS_8_OK
-            png_set_compression_window_bits(s_write_ptr, 8);
-#else
-            png_set_compression_window_bits(s_write_ptr, 9);
-#endif
+            png_set_compression_window_bits(s_write_ptr,
+                                            s_options.window_bits);
         }
 
         /* Override the default libpng settings. */
