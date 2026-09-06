@@ -129,25 +129,42 @@ static struct opng_engine_struct
 /*
  * The optimization process.
  */
-static struct opng_process_struct
+static struct
 {
+    /* Per-file: reset once via memset at the top of opng_optimize_impl.
+     * Valid for the whole file. */
     unsigned int status;
     int num_iterations;
     opng_foffset_t in_datastream_offset;
-    opng_fsize_t in_file_size, out_file_size;
-    opng_fsize_t in_idat_size, out_idat_size;
-    opng_fsize_t best_idat_size, max_idat_size;
-    png_uint_32 in_plte_trns_size, out_plte_trns_size;
-    png_uint_32 reductions;
+    opng_fsize_t in_file_size;
+    opng_fsize_t in_idat_size;
+    opng_fsize_t max_idat_size;
+    png_uint_32 in_plte_trns_size;
+    /* these four probably don't need to live here */
     opng_bitset_t compr_level_set, mem_level_set, strategy_set, filter_set;
-    int best_compr_level, best_mem_level, best_strategy, best_filter, have_best;
     const char *trial_name, *best_name;
+
+    /* These hold the "winner so far" across every trial. */
+    opng_fsize_t best_idat_size;
+    png_uint_32 best_plte_trns_size;
+    int best_compr_level, best_mem_level, best_strategy, best_filter;
+    int have_best;
+} s_process;
+
+static struct
+{
+    /* Per-trial: reset once per opng_write_file call, via
+     * opng_init_write_data, at the start of every single trial write. */
+    opng_fsize_t out_file_size;
+    opng_fsize_t out_idat_size;
+    png_uint_32 out_plte_trns_size;
     int allow_crt_chunk;
     int crt_chunk_is_idat;
+    int is_optim_trial;
     opng_foffset_t crt_idat_offset;
     opng_fsize_t crt_idat_size;
     png_uint_32 crt_idat_crc;
-} s_process;
+} s_trial;
 
 /*
  * The optimization process summary.
@@ -575,14 +592,7 @@ opng_init_read_data(void)
 static void
 opng_init_write_data(void)
 {
-    s_process.out_file_size = 0;
-    s_process.out_plte_trns_size = 0;
-    s_process.out_idat_size = 0;
-    s_process.allow_crt_chunk = 0;
-    s_process.crt_chunk_is_idat = 0;
-    s_process.crt_idat_offset = 0;
-    s_process.crt_idat_size = 0;
-    s_process.crt_idat_crc = 0;
+    memset(&s_trial, 0, sizeof(s_trial));
 }
 
 /*
@@ -696,17 +706,18 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
     {
         OPNG_ENSURE(length == 8, "Writing chunk header, expecting 8 bytes");
         chunk_sig = data + 4;
-        s_process.allow_crt_chunk = opng_allow_chunk(chunk_sig);
+        s_trial.allow_crt_chunk = opng_allow_chunk(chunk_sig);
         if (memcmp(chunk_sig, k_sig_IDAT, 4) == 0)
         {
-            s_process.crt_chunk_is_idat = 1;
-            s_process.out_idat_size += png_get_uint_32(data);
+            s_trial.crt_chunk_is_idat = 1;
+            s_trial.out_idat_size += png_get_uint_32(data);
             /* Abandon the trial if IDAT is bigger than the maximum allowed.
              * This still applies now that trials are written to a real
              * .trial file: the file is truncated/discarded by the caller
              * (opng_write_file's Catch block) before anyone can look at it.
              */
-            if (s_process.out_idat_size > s_process.max_idat_size)
+            if (s_trial.is_optim_trial &&
+                s_trial.out_idat_size > s_process.max_idat_size)
             {
                 /* This is an early interruption, not an error. */
                 Throw OPNG_STATUS_OK;
@@ -714,12 +725,12 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
         }
         else  /* not IDAT */
         {
-            s_process.crt_chunk_is_idat = 0;
+            s_trial.crt_chunk_is_idat = 0;
             if (memcmp(chunk_sig, k_sig_PLTE, 4) == 0 ||
                 memcmp(chunk_sig, k_sig_tRNS, 4) == 0)
             {
                 /* Add the chunk overhead (header + CRC) to the data size. */
-                s_process.out_plte_trns_size += png_get_uint_32(data) + 12;
+                s_trial.out_plte_trns_size += png_get_uint_32(data) + 12;
             }
         }
     }
@@ -729,7 +740,7 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
     }
 
     /* Continue only if the current chunk type is allowed. */
-    if (io_state_loc != PNGX_IO_SIGNATURE && !s_process.allow_crt_chunk)
+    if (io_state_loc != PNGX_IO_SIGNATURE && !s_trial.allow_crt_chunk)
         return;
 
     /* Exit early if there is no file to write to (simulation trial). */
@@ -743,17 +754,17 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
     switch (io_state_loc)
     {
     case PNGX_IO_CHUNK_HDR:
-        if (s_process.crt_chunk_is_idat)
+        if (s_trial.crt_chunk_is_idat)
         {
-            if (s_process.crt_idat_offset == 0)
+            if (s_trial.crt_idat_offset == 0)
             {
                 /* This is the header of the first IDAT. */
-                s_process.crt_idat_offset = opng_ftello(stream);
+                s_trial.crt_idat_offset = opng_ftello(stream);
                 /* The size of the final IDAT will be revised. */
-                s_process.crt_idat_size = length;
-                png_save_uint_32(data, (png_uint_32)s_process.crt_idat_size);
+                s_trial.crt_idat_size = length;
+                png_save_uint_32(data, (png_uint_32)s_trial.crt_idat_size);
                 /* Start computing the CRC of the final IDAT. */
-                s_process.crt_idat_crc = crc32(0, k_sig_IDAT, 4);
+                s_trial.crt_idat_crc = crc32(0, k_sig_IDAT, 4);
             }
             else
             {
@@ -763,39 +774,39 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
         }
         else
         {
-            if (s_process.crt_idat_offset != 0)
+            if (s_trial.crt_idat_offset != 0)
             {
                 /* This is the header of the first chunk after IDAT.
                  * Finalize IDAT before resuming the normal operation.
                  */
-                png_save_uint_32(buf, s_process.crt_idat_crc);
+                png_save_uint_32(buf, s_trial.crt_idat_crc);
                 if (fwrite(buf, 1, 4, stream) != 4)
                     io_state = 0;  /* error */
-                s_process.out_file_size += 4;
-                if (s_process.out_idat_size != s_process.crt_idat_size)
+                s_trial.out_file_size += 4;
+                if (s_trial.out_idat_size != s_trial.crt_idat_size)
                 {
                     /* The IDAT size has not been guessed correctly.
                      * It must be updated in a non-streamable way.
                      */
-                    opng_check_idat_size(s_process.out_idat_size);
+                    opng_check_idat_size(s_trial.out_idat_size);
                     png_save_uint_32(buf,
-                                     (png_uint_32)s_process.out_idat_size);
-                    if (opng_fwriteo(stream, s_process.crt_idat_offset, SEEK_SET,
+                                     (png_uint_32)s_trial.out_idat_size);
+                    if (opng_fwriteo(stream, s_trial.crt_idat_offset, SEEK_SET,
                                      buf, 4) != 4)
                         io_state = 0;  /* error */
                 }
                 if (io_state == 0)
                     png_error(png_ptr, "Can't finalize IDAT");
-                s_process.crt_idat_offset = 0;
+                s_trial.crt_idat_offset = 0;
             }
         }
         break;
     case PNGX_IO_CHUNK_DATA:
-        if (s_process.crt_chunk_is_idat)
-            s_process.crt_idat_crc = crc32(s_process.crt_idat_crc, data, length);
+        if (s_trial.crt_chunk_is_idat)
+            s_trial.crt_idat_crc = crc32(s_trial.crt_idat_crc, data, length);
         break;
     case PNGX_IO_CHUNK_CRC:
-        if (s_process.crt_chunk_is_idat)
+        if (s_trial.crt_chunk_is_idat)
         {
             /* Defer writing until the first non-IDAT occurs. */
             return;
@@ -806,7 +817,7 @@ opng_write_data(png_structp png_ptr, png_bytep data, size_t length)
     /* Write the data. */
     if (fwrite(data, 1, length, stream) != length)
         png_error(png_ptr, "Can't write the output file");
-    s_process.out_file_size += length;
+    s_trial.out_file_size += length;
 }
 
 /*
@@ -1057,11 +1068,10 @@ opng_read_file(FILE *infile)
         }
 
         /* Try to reduce the image. */
-        s_process.reductions =
-            opng_reduce_image(s_read_ptr, s_read_info_ptr, reductions);
+        reductions = opng_reduce_image(s_read_ptr, s_read_info_ptr, reductions);
 
         /* If the image is reduced, enforce full compression. */
-        if (s_process.reductions != OPNG_REDUCE_NONE)
+        if (reductions != OPNG_REDUCE_NONE)
         {
             opng_load_image_info(s_read_ptr, s_read_info_ptr, 1);
             usr_printf("Reducing image to ");
@@ -1153,13 +1163,14 @@ opng_write_file(FILE *outfile,
         /* Write the PNG stream. */
         opng_store_image_info(s_write_ptr, s_write_info_ptr, 1);
         opng_init_write_data();
+        s_trial.is_optim_trial = 1;
         pngx_set_write_fn(s_write_ptr, outfile, opng_write_data, NULL);
         png_write_png(s_write_ptr, s_write_info_ptr, 0, NULL);
     }
     Catch (status)
     {
         /* Set IDAT size to invalid. */
-        s_process.out_idat_size = k_idat_size_max + 1;
+        s_trial.out_idat_size = k_idat_size_max + 1;
         /* If this was an early trial interruption (oversized IDAT),
          * the .trial file on disk is truncated/corrupt. Get rid of it
          * immediately so it can never be mistaken for a real candidate. */
@@ -1379,20 +1390,20 @@ opng_try_params(int compr_level, int mem_level, int strategy, int filter)
     /* opng_write_file has already closed trial_file (see above),
      * and has unlinked it if it aborted early due to oversized IDAT. */
 
-    if (s_process.out_idat_size > k_idat_size_max)
+    if (s_trial.out_idat_size > k_idat_size_max)
     {
         opng_os_unlink(s_process.trial_name);
         return 1;  /* discarded: too big */
     }
 
     if (s_process.have_best &&
-        s_process.best_idat_size < s_process.out_idat_size)
+        s_process.best_idat_size < s_trial.out_idat_size)
     {
         opng_os_unlink(s_process.trial_name);
         return 1;  /* discarded: not better than current best */
     }
     if (s_process.have_best &&
-        s_process.best_idat_size == s_process.out_idat_size &&
+        s_process.best_idat_size == s_trial.out_idat_size &&
         (s_process.best_strategy == Z_HUFFMAN_ONLY ||
          s_process.best_strategy == Z_RLE))
     {
@@ -1408,9 +1419,10 @@ opng_try_params(int compr_level, int mem_level, int strategy, int filter)
     s_process.best_mem_level = mem_level;
     s_process.best_strategy = strategy;
     s_process.best_filter = filter;
-    s_process.best_idat_size = s_process.out_idat_size;
+    s_process.best_idat_size = s_trial.out_idat_size;
+    s_process.best_plte_trns_size = s_trial.out_plte_trns_size;
     if (!s_options.full)
-        s_process.max_idat_size = s_process.out_idat_size;
+        s_process.max_idat_size = s_trial.out_idat_size;
     return 0;
 }
 
@@ -1428,8 +1440,6 @@ opng_iterate(void)
 
     OPNG_ENSURE(s_process.num_iterations > 0, "Iterations not initialized");
 
-    s_process.have_best = 0;
-
     compr_level_set = s_process.compr_level_set;
     mem_level_set = s_process.mem_level_set;
     strategy_set = s_process.strategy_set;
@@ -1437,10 +1447,6 @@ opng_iterate(void)
 
     /* Prepare for the big iteration. */
     s_process.best_idat_size = k_idat_size_max + 1;
-    s_process.best_compr_level = -1;
-    s_process.best_mem_level = -1;
-    s_process.best_strategy = -1;
-    s_process.best_filter = -1;
 
     /* Iterate through the "hyper-rectangle" (zc, zm, zs, f). */
     usr_printf("\nTrying:\n");
@@ -1513,7 +1519,7 @@ opng_iterate(void)
                         continue;
                     }
                     usr_printf("\t\tIDAT size = %" OPNG_FSIZE_PRIu "\n",
-                               s_process.out_idat_size);
+                               s_trial.out_idat_size);
                     line_reused = 0;
                 }
             }
@@ -1533,7 +1539,7 @@ opng_iterate(void)
 static void
 opng_finish_iterations(void)
 {
-    if (s_process.best_idat_size + s_process.out_plte_trns_size <
+    if (s_process.best_idat_size + s_process.best_plte_trns_size <
         s_process.in_idat_size + s_process.in_plte_trns_size)
         s_process.status |= OUTPUT_NEEDS_NEW_IDAT;
     if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
@@ -1914,22 +1920,22 @@ opng_optimize_impl(const char *infile_name)
      * aborted candidate from the end of the trial loop; report the
      * confirmed winning size instead. */
     if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
-        s_process.out_idat_size = s_process.best_idat_size;
+        s_trial.out_idat_size = s_process.best_idat_size;
 
     /* Display the output IDAT/file sizes. */
     usr_printf("\nOutput IDAT size = %" OPNG_FSIZE_PRIu " bytes",
-               s_process.out_idat_size);
+               s_trial.out_idat_size);
     if (s_process.status & INPUT_HAS_PNG_DATASTREAM)
     {
         usr_printf(" (");
         opng_print_fsize_difference(s_process.in_idat_size,
-                                    s_process.out_idat_size, 0);
+                                    s_trial.out_idat_size, 0);
         usr_printf(")");
     }
     usr_printf("\nOutput file size = %" OPNG_FSIZE_PRIu " bytes (",
-               s_process.out_file_size);
+               s_trial.out_file_size);
     opng_print_fsize_difference(s_process.in_file_size,
-                                s_process.out_file_size, 1);
+                                s_trial.out_file_size, 1);
     usr_printf(")\n");
 }
 
