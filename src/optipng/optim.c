@@ -145,7 +145,7 @@ static struct
     const char *trial_name, *best_name;
 
     /* These hold the "winner so far" across every trial. */
-    opng_fsize_t best_idat_size;
+    opng_fsize_t best_idat_size, best_file_size;
     png_uint_32 best_plte_trns_size;
     int best_compr_level, best_mem_level, best_strategy, best_filter;
     int have_best;
@@ -1420,6 +1420,7 @@ opng_try_params(int compr_level, int mem_level, int strategy, int filter)
     s_process.best_strategy = strategy;
     s_process.best_filter = filter;
     s_process.best_idat_size = s_trial.out_idat_size;
+    s_process.best_file_size = s_trial.out_file_size;
     s_process.best_plte_trns_size = s_trial.out_plte_trns_size;
     if (!s_options.full)
         s_process.max_idat_size = s_trial.out_idat_size;
@@ -1919,8 +1920,10 @@ opng_optimize_impl(const char *infile_name)
     /* out_idat_size is trial scratch state and may reflect a losing or
      * aborted candidate from the end of the trial loop; report the
      * confirmed winning size instead. */
-    if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
+    if (s_process.status & OUTPUT_NEEDS_NEW_IDAT) {
         s_trial.out_idat_size = s_process.best_idat_size;
+        s_trial.out_file_size = s_process.best_file_size;
+    }
 
     /* Display the output IDAT/file sizes. */
     usr_printf("\nOutput IDAT size = %" OPNG_FSIZE_PRIu " bytes",
