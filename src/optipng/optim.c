@@ -1384,14 +1384,16 @@ opng_try_params(int compr_level, int mem_level, int strategy, int filter)
 
     if (s_trial.out_idat_size > k_idat_size_max)
     {
-        opng_os_unlink(s_process.trial_name);
+        if (!s_options.simulate)
+            opng_os_unlink(s_process.trial_name);
         return 1;  /* discarded: too big */
     }
 
     if (s_process.have_best &&
         s_process.best_idat_size < s_trial.out_idat_size)
     {
-        opng_os_unlink(s_process.trial_name);
+        if (!s_options.simulate)
+            opng_os_unlink(s_process.trial_name);
         return 1;  /* discarded: not better than current best */
     }
     if (s_process.have_best &&
@@ -1399,13 +1401,17 @@ opng_try_params(int compr_level, int mem_level, int strategy, int filter)
         (s_process.best_strategy == Z_HUFFMAN_ONLY ||
          s_process.best_strategy == Z_RLE))
     {
-        opng_os_unlink(s_process.trial_name);
+        if (!s_options.simulate)
+            opng_os_unlink(s_process.trial_name);
         return 1;  /* discarded: tie, current best already fastest */
     }
 
     /* This candidate wins. Promote .trial to .best. */
-    if (opng_os_rename(s_process.trial_name, s_process.best_name, 1) != 0)
+    if (!s_options.simulate &&
+        opng_os_rename(s_process.trial_name, s_process.best_name, 1) != 0)
+    {
         opng_throw_error("Can't promote trial file to best");
+    }
     s_process.have_best = 1;
     s_process.best_compr_level = compr_level;
     s_process.best_mem_level = mem_level;
