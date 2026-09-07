@@ -192,6 +192,14 @@ int
 opng_os_rename(const char *src_path, const char *dest_path, int clobber);
 
 /*
+ * Creates a new hard link to an existing file system object.
+ * On success, the function returns 0.
+ * On error, it returns -1. (this always happens on non-linux)
+ */
+int
+opng_os_link(const char *src_path, const char *dest_path, int clobber);
+
+/*
  * Creates a new directory.
  * If the directory is successfully created, or if it already exists,
  * the function returns 0.

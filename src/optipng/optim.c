@@ -1813,8 +1813,37 @@ opng_optimize_impl(const char *infile_name)
         return;
     }
 
+    has_backup = 0;
+    if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
+    {
+        /* .best already holds the winning encode from the trial phase;
+         * it will be installed with a single atomic rename() below, so
+         * there is no need to move the current output out of the way
+         * first. If a backup is requested, keep the pre-existing output
+         * as a hard link instead, so the install stays atomic.
+         */
+        if (new_outfile)
+        {
+            usr_printf("\nOutput file: %s\n", outfile_name);
+            if (s_options.dir_name != NULL)
+                opng_os_create_dir(s_options.dir_name);
+        }
+        if ((!new_outfile || s_options.backup) &&
+            opng_os_test_file_access(outfile_name, "e") == 0)
+        {
+            if (opng_os_link(outfile_name, bakfile_name,
+                             s_options.clobber) != 0)
+            {
+                if (opng_os_rename(outfile_name, bakfile_name,
+                             s_options.clobber) != 0)
+                    opng_throw_error("Can't back up the output file");
+                has_backup++;
+            }
+            has_backup++;
+        }
+    }
     /* Make room for the output file. */
-    if (new_outfile)
+    else if (new_outfile)
     {
         usr_printf("\nOutput file: %s\n", outfile_name);
         if (s_options.dir_name != NULL)
@@ -1881,8 +1910,24 @@ opng_optimize_impl(const char *infile_name)
         if (outfile)
             fclose(outfile);
         outfile = NULL;
+        if (s_process.status & OUTPUT_NEEDS_NEW_IDAT)
+        {
+            if (has_backup == 1)
+                /* The install is a single atomic rename(); on failure the
+                 * original output/input file is left untouched. Only the
+                 * extra backup hard link (if any) needs cleaning up.
+                 */
+                opng_os_unlink(bakfile_name);
+            else if (has_backup == 2)
+            {
+                if (opng_os_rename(bakfile_name, outfile_name, 1) != 0)
+                    opng_print_warning(
+                        "Can't recover the original file from backup");
+            }
+        }
+
         /* Restore the original input file and rethrow the exception. */
-        if (has_backup)
+        else if (has_backup)
         {
             if (opng_os_rename(bakfile_name,
                                new_outfile ? outfile_name : infile_name_local,
@@ -1911,7 +1956,7 @@ opng_optimize_impl(const char *infile_name)
                                outfile_name);
 
     /* Remove the backup file if it is not needed. */
-    if (!s_options.backup && !new_outfile)
+    if (has_backup && !s_options.backup && !new_outfile)
     {
         if (opng_os_unlink(bakfile_name) != 0)
             opng_print_warning("Can't remove the backup file");

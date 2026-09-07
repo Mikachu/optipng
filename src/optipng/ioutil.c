@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include <attr/error_context.h>
 #include <attr/libattr.h>
@@ -478,13 +479,15 @@ opng_os_rename(const char *src_path, const char *dest_path, int clobber)
     return MoveFileExA(src_path, dest_path, dwFlags) ? 0 : -1;
 
 #elif defined OPNG_OS_UNIX
+    int ret = 0;
 
-    if (!clobber)
-    {
-        if (access(dest_path, OPNG_TEST_FILE) >= 0)
-            return -1;
-    }
-    return rename(src_path, dest_path);
+    if (clobber)
+        return rename(src_path, dest_path);
+
+    ret = link(src_path, dest_path);
+    if (ret < 0) return ret;
+
+    return unlink(src_path);
 
 #else  /* generic */
 
@@ -495,6 +498,31 @@ opng_os_rename(const char *src_path, const char *dest_path, int clobber)
         opng_unlink(dest_path);
     }
     return rename(src_path, dest_path);
+
+#endif
+}
+
+/*
+ * Creates a new hard link to an existing file system object.
+ */
+int
+opng_os_link(const char *src_path, const char *dest_path, int clobber)
+{
+#if defined OPNG_OS_UNIX
+    int ret = 0;
+
+    if (clobber)
+        ret = unlink(dest_path);
+    if (ret < 0 && errno != ENOENT) return ret;
+
+    return link(src_path, dest_path);
+
+#else  /* generic: hard links are not universally supported */
+
+    (void)src_path;
+    (void)dest_path;
+    (void)clobber;
+    return -1;
 
 #endif
 }
