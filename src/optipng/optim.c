@@ -1760,9 +1760,13 @@ opng_optimize_impl(const char *infile_name)
                        "Rerun " PROGRAM_NAME " with -backup enabled.\n");
             opng_throw_error("Can't overwrite the output file");
         }
-        if (opng_os_test_file_access(outfile_name, "fw") != 0 ||
-            (!s_options.clobber &&
-             opng_os_test_file_access(bakfile_name, "e") == 0))
+        if (opng_os_test_file_access(outfile_name, "fw") != 0)
+        {
+            usr_printf("The output file is not writable.\n");
+            opng_throw_error("Can't overwrite the output file");
+        }
+        if (!s_options.clobber &&
+            opng_os_test_file_access(bakfile_name, "e") == 0)
         {
             usr_printf("A backup file already exists. "
                        "Rerun " PROGRAM_NAME " with -clobber enabled.\n");
